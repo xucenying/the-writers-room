@@ -2,10 +2,14 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import OpenAI from "openai";
 import { newState, type RefinementKind, type WritersRoomState } from "./state";
-import { getSession, saveSession, type RoomEvent, type SessionRuntime } from "./session-store";
 
 type Agent = "gig-analyst" | "structurer" | "punch-up-writer" | "test-audience" | "director";
 type AgentOutput = Record<string, unknown>;
+export type RoomEvent =
+  | { type: "session"; sessionId: string }
+  | { type: "agent"; agent: string; status: "thinking" | "complete"; output?: unknown }
+  | { type: "final"; state: WritersRoomState }
+  | { type: "error"; message: string };
 type Emit = (event: RoomEvent) => void;
 
 const agentNames: Record<Agent, string> = {
@@ -45,7 +49,7 @@ async function requestModel(system: string, input: string) {
       { role: "user" as const, content: input }
     ]
   };
-  const maxAttempts = 3;
+  const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await client.chat.completions.create(payload);
@@ -111,8 +115,7 @@ function refinementKind(output: AgentOutput): RefinementKind {
   return output.refinement_type === "surface" ? "surface" : "structural";
 }
 
-async function runInternalLoop(session: SessionRuntime, emit: Emit, firstDraftInstruction: string) {
-  const state = session.state;
+async function runInternalLoop(state: WritersRoomState, emit: Emit, firstDraftInstruction: string) {
   state.loop.iteration = 0;
   state.loop.stop_reason = null;
 
@@ -143,55 +146,46 @@ async function runInternalLoop(session: SessionRuntime, emit: Emit, firstDraftIn
   if (!state.loop.stop_reason) state.loop.stop_reason = "max_iterations";
 }
 
-async function structureSet(session: SessionRuntime, emit: Emit) {
-  const structured = await runAgent("structurer", session.state, "Create the stand-up set list now.", emit);
+async function structureSet(state: WritersRoomState, emit: Emit) {
+  const structured = await runAgent("structurer", state, "Create the stand-up set list now.", emit);
   if (!structured.skeleton || typeof structured.skeleton !== "object") throw new Error("Structurer did not return a skeleton.");
-  session.state.skeleton = structured.skeleton as WritersRoomState["skeleton"];
+  state.skeleton = structured.skeleton as WritersRoomState["skeleton"];
 }
 
-async function directSet(session: SessionRuntime, emit: Emit) {
-  const directed = await runAgent("director", session.state, "Assemble the final set and delivery guidance.", emit);
+async function directSet(state: WritersRoomState, emit: Emit) {
+  const directed = await runAgent("director", state, "Assemble the final set and delivery guidance.", emit);
   if (!directed.final || typeof directed.final !== "object") throw new Error("Director did not return a final set.");
-  session.state.final = directed.final as WritersRoomState["final"];
-  session.phase = "complete";
-  saveSession(session);
-  emit({ type: "final", state: session.state });
+  state.final = directed.final as WritersRoomState["final"];
+  emit({ type: "final", state });
 }
 
 export async function startSession(briefFreetext: string, emit: Emit) {
-  const session: SessionRuntime = { state: newState(briefFreetext), phase: "working" };
-  saveSession(session);
-  emit({ type: "session", sessionId: session.state.session_id });
+  const state = newState(briefFreetext);
+  emit({ type: "session", sessionId: state.session_id });
 
   const analysis = await runAgent(
     "gig-analyst",
-    session.state,
+    state,
     "Analyze the user's brief, extracting the gig profile and usable material. This is the initial run.",
     emit
   );
-  mergeAnalystOutput(session.state, analysis);
-  await structureSet(session, emit);
-  await runInternalLoop(session, emit, "Write the first draft of the stand-up set.");
-  await directSet(session, emit);
+  mergeAnalystOutput(state, analysis);
+  await structureSet(state, emit);
+  await runInternalLoop(state, emit, "Write the first draft of the stand-up set.");
+  await directSet(state, emit);
 }
 
-export async function refineSession(sessionId: string, feedback: string, emit: Emit) {
-  const session = getSession(sessionId);
-  if (!session) throw new Error("That session has expired. Start a new room.");
-  if (session.phase !== "complete") throw new Error("Wait for the current room run to finish before refining it.");
-
-  session.phase = "working";
-  session.state.user_input.refinement_history.push(feedback);
-  saveSession(session);
+export async function refineSession(state: WritersRoomState, feedback: string, emit: Emit) {
+  state.user_input.refinement_history.push(feedback);
 
   const analysis = await runAgent(
     "gig-analyst",
-    session.state,
+    state,
     `Classify and apply the latest user feedback: ${feedback}`,
     emit
   );
-  mergeAnalystOutput(session.state, analysis);
-  if (refinementKind(analysis) === "structural") await structureSet(session, emit);
-  await runInternalLoop(session, emit, "Revise the current draft to address the latest user feedback.");
-  await directSet(session, emit);
+  mergeAnalystOutput(state, analysis);
+  if (refinementKind(analysis) === "structural") await structureSet(state, emit);
+  await runInternalLoop(state, emit, "Revise the current draft to address the latest user feedback.");
+  await directSet(state, emit);
 }

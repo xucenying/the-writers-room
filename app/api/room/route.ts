@@ -1,5 +1,5 @@
-import { refineSession, startSession } from "@/src/lib/orchestrator";
-import type { RoomEvent } from "@/src/lib/session-store";
+import { refineSession, startSession, type RoomEvent } from "@/src/lib/orchestrator";
+import type { WritersRoomState } from "@/src/lib/state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +9,7 @@ function sseEvent(event: RoomEvent) {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as { action?: string; sessionId?: string; text?: string };
+  const body = (await request.json()) as { action?: string; state?: WritersRoomState; text?: string };
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
@@ -20,8 +20,8 @@ export async function POST(request: Request) {
             if (!body.text?.trim()) throw new Error("Tell the room about your set first.");
             await startSession(body.text.trim(), emit);
           } else if (body.action === "refine") {
-            if (!body.sessionId || !body.text?.trim()) throw new Error("A session and feedback are required.");
-            await refineSession(body.sessionId, body.text.trim(), emit);
+            if (!body.state || !body.text?.trim()) throw new Error("The completed set and feedback are required.");
+            await refineSession(body.state, body.text.trim(), emit);
           } else {
             throw new Error("Unknown room action.");
           }

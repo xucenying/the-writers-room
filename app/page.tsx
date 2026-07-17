@@ -1,14 +1,10 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import type { WritersRoomState } from "@/src/lib/state";
 
 type AgentEvent = { type: "agent"; agent: string; status: "thinking" | "complete"; output?: unknown };
 type RecordValue = Record<string, unknown>;
-type FinalState = {
-  gig_profile: { assumptions: string[]; clean_mode: boolean; sensitive_mode: boolean; edginess: "clean" | "playful" | "edgy" };
-  final: { title: string; set_text: string; estimated_duration_seconds: number; delivery_tips: string[] };
-  loop: { iteration: number; stop_reason: string | null };
-};
 
 const examples = [
   "Office party: I am a product manager at a small startup, our CEO loves buzzwords, and I need three clean minutes for 40 coworkers.",
@@ -151,14 +147,13 @@ function SetText({ text }: { text: string }) {
 
 export default function Home() {
   const [brief, setBrief] = useState("");
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [feed, setFeed] = useState<AgentEvent[]>([]);
   const [feedback, setFeedback] = useState("");
-  const [finalState, setFinalState] = useState<FinalState | null>(null);
+  const [finalState, setFinalState] = useState<WritersRoomState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function runRoom(payload: Record<string, string>) {
+  async function runRoom(payload: Record<string, unknown>) {
     setBusy(true);
     setError(null);
     try {
@@ -177,8 +172,7 @@ export default function Home() {
         for (const frame of frames) {
           const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
           if (!data) continue;
-          const event = JSON.parse(data) as AgentEvent | { type: "session"; sessionId: string } | { type: "final"; state: FinalState } | { type: "error"; message: string };
-          if (event.type === "session") setSessionId(event.sessionId);
+          const event = JSON.parse(data) as AgentEvent | { type: "session"; sessionId: string } | { type: "final"; state: WritersRoomState } | { type: "error"; message: string };
           if (event.type === "agent") setFeed((current) => {
             if (event.status !== "complete") return [...current, event];
             const thinkingIndex = current.map((item) => item.agent === event.agent && item.status === "thinking").lastIndexOf(true);
@@ -198,15 +192,15 @@ export default function Home() {
   function start(event: FormEvent) {
     event.preventDefault();
     if (!brief.trim() || busy) return;
-    setFeed([]); setFinalState(null); setSessionId(null);
+    setFeed([]); setFinalState(null);
     void runRoom({ action: "start", text: brief.trim() });
   }
 
   function refine(event: FormEvent) {
     event.preventDefault();
-    if (!sessionId || !feedback.trim() || busy) return;
+    if (!finalState || !feedback.trim() || busy) return;
     setFeed([]); setFeedback("");
-    void runRoom({ action: "refine", sessionId, text: feedback.trim() });
+    void runRoom({ action: "refine", state: finalState, text: feedback.trim() });
   }
 
   async function copySet() {
@@ -217,7 +211,7 @@ export default function Home() {
     setBrief((current) => `${current}${current.trim() ? "\n" : ""}${template}`);
   }
 
-  if (!sessionId && !busy && !error) return <main className="landing"><span className="eyebrow">FIVE AGENTS. ONE KILLER SET.</span><h1>The Writers&apos; Room</h1><p>Bring the details. We&apos;ll shape them into a safe, performable stand-up set and test every beat before it reaches the mic.</p><form onSubmit={start} className="occasion-form"><label htmlFor="brief">Tell the room everything</label><textarea id="brief" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="The occasion, who&apos;s in the audience, what you do, stories to include, and the tone you want. The more you give, the better the set." rows={8} /><div className="input-hints"><p>Things you could tell the room <em>(all optional)</em></p><div>{inputHints.map((hint) => <button key={hint.label} type="button" onClick={() => appendHint(hint.template)}>{hint.label}</button>)}</div><small>The room fills any gaps with safe assumptions.</small></div><button type="submit">Enter the room <span>→</span></button></form><div className="examples">{examples.map((example) => <button key={example} type="button" onClick={() => setBrief(example)}>{example}</button>)}</div></main>;
+  if (!finalState && !busy && !error) return <main className="landing"><span className="eyebrow">FIVE AGENTS. ONE KILLER SET.</span><h1>The Writers&apos; Room</h1><p>Bring the details. We&apos;ll shape them into a safe, performable stand-up set and test every beat before it reaches the mic.</p><form onSubmit={start} className="occasion-form"><label htmlFor="brief">Tell the room everything</label><textarea id="brief" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="The occasion, who&apos;s in the audience, what you do, stories to include, and the tone you want. The more you give, the better the set." rows={8} /><div className="input-hints"><p>Things you could tell the room <em>(all optional)</em></p><div>{inputHints.map((hint) => <button key={hint.label} type="button" onClick={() => appendHint(hint.template)}>{hint.label}</button>)}</div><small>The room fills any gaps with safe assumptions.</small></div><button type="submit">Enter the room <span>→</span></button></form><div className="examples">{examples.map((example) => <button key={example} type="button" onClick={() => setBrief(example)}>{example}</button>)}</div></main>;
 
   return <main className="room-shell">
     <header className="room-header"><div><span className="eyebrow">THE WRITERS&apos; ROOM</span><strong>{finalState ? finalState.final.title : "Building your set"}</strong></div><span className={`status ${busy ? "live" : ""}`}>{busy ? "ROOM IN SESSION" : "ROOM PAUSED"}</span></header>
