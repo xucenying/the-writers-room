@@ -1,49 +1,40 @@
-export type OccasionType =
-  | "wedding_toast"
-  | "retirement"
-  | "farewell"
-  | "birthday"
-  | "anniversary"
-  | "graduation"
-  | "other";
-
-export type HumorCeiling = "gentle" | "playful" | "roast";
+export type Edginess = "clean" | "playful" | "edgy";
+export type RefinementKind = "structural" | "surface";
 
 export interface WritersRoomState {
   session_id: string;
   user_input: {
-    occasion_freetext: string;
-    answers: Array<{ question: string; answer: string }>;
+    brief_freetext: string;
+    refinement_history: string[];
   };
-  occasion_profile: {
-    occasion_type: OccasionType;
+  gig_profile: {
+    occasion: string;
+    audience_size: number | null;
+    audience_group: string[];
+    clean_mode: boolean;
     sensitive_mode: boolean;
-    speaker_role: string;
-    honoree: string;
-    audience_composition: string[];
-    formality: "casual" | "semi_formal" | "formal";
+    performer_occupation: string | null;
+    performer_persona: string;
     target_length_seconds: number;
-    humor_ceiling: HumorCeiling;
-    sentiment_ratio: number;
+    edginess: Edginess;
     off_limits: string[];
-    cultural_notes: string | null;
+    assumptions: string[];
   };
   material: {
-    stories: Array<{
+    bits_source: Array<{
       id: string;
       summary: string;
       specifics: string[];
-      emotional_core: string;
       comedy_potential: "low" | "medium" | "high";
-      sentiment_potential: "low" | "medium" | "high";
     }>;
+    observational_topics: string[];
   };
   skeleton: {
     premise: string;
     beats: Array<{
       id: string;
       type: "opener" | "story" | "joke" | "pivot" | "sincere" | "closer";
-      source_story: string | null;
+      source_material: string | null;
       intent: string;
       notes: string;
     }>;
@@ -66,7 +57,7 @@ export interface WritersRoomState {
   };
   final: {
     title: string;
-    speech_text: string;
+    set_text: string;
     estimated_duration_seconds: number;
     delivery_tips: string[];
   };
@@ -77,40 +68,28 @@ export interface WritersRoomState {
   };
 }
 
-export function newState(occasionFreetext: string): WritersRoomState {
+export function newState(briefFreetext: string): WritersRoomState {
   return {
     session_id: crypto.randomUUID(),
-    user_input: { occasion_freetext: occasionFreetext, answers: [] },
-    occasion_profile: {
-      occasion_type: "other",
+    user_input: { brief_freetext: briefFreetext, refinement_history: [] },
+    gig_profile: {
+      occasion: "unknown",
+      audience_size: null,
+      audience_group: ["mixed"],
+      clean_mode: false,
       sensitive_mode: false,
-      speaker_role: "speaker",
-      honoree: "the honoree",
-      audience_composition: [],
-      formality: "semi_formal",
-      target_length_seconds: 120,
-      humor_ceiling: "gentle",
-      sentiment_ratio: 0.5,
+      performer_occupation: null,
+      performer_persona: "a first-time performer",
+      target_length_seconds: 180,
+      edginess: "playful",
       off_limits: [],
-      cultural_notes: null
+      assumptions: []
     },
-    material: { stories: [] },
+    material: { bits_source: [], observational_topics: [] },
     skeleton: { premise: "", beats: [] },
     draft: { version: 0, beats: [] },
     audience_feedback: { personas: [], verdict: "revise", revision_targets: [] },
-    final: { title: "", speech_text: "", estimated_duration_seconds: 0, delivery_tips: [] },
+    final: { title: "", set_text: "", estimated_duration_seconds: 0, delivery_tips: [] },
     loop: { iteration: 0, max_iterations: 3, stop_reason: null }
   };
-}
-
-const humorLevels: HumorCeiling[] = ["gentle", "playful", "roast"];
-
-export function capHumor(
-  requested: HumorCeiling,
-  analystCap: HumorCeiling,
-  sensitiveMode: boolean,
-  formality: WritersRoomState["occasion_profile"]["formality"]
-): HumorCeiling {
-  if (sensitiveMode || formality === "formal") return "gentle";
-  return humorLevels.indexOf(requested) > humorLevels.indexOf(analystCap) ? analystCap : requested;
 }

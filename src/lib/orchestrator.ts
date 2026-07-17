@@ -1,16 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import OpenAI from "openai";
-import { capHumor, newState, type HumorCeiling, type WritersRoomState } from "./state";
+import { newState, type RefinementKind, type WritersRoomState } from "./state";
 import { getSession, saveSession, type RoomEvent, type SessionRuntime } from "./session-store";
 
-type Agent = "occasion-analyst" | "interviewer" | "structurer" | "punch-up-writer" | "test-audience" | "director";
+type Agent = "gig-analyst" | "structurer" | "punch-up-writer" | "test-audience" | "director";
 type AgentOutput = Record<string, unknown>;
 type Emit = (event: RoomEvent) => void;
 
 const agentNames: Record<Agent, string> = {
-  "occasion-analyst": "Occasion Analyst",
-  interviewer: "Interviewer",
+  "gig-analyst": "Gig Analyst",
   structurer: "Structurer",
   "punch-up-writer": "Punch-Up Writer",
   "test-audience": "Test Audience",
@@ -46,27 +45,15 @@ async function requestModel(system: string, input: string) {
       { role: "user" as const, content: input }
     ]
   };
-  const { writeFile } = await import("node:fs/promises");
-  await writeFile(join(process.cwd(), "debug-request.json"), JSON.stringify(payload, null, 2));
-  console.log("[debug] key ending:", apiKey.slice(-4), "| model:", payload.model, "| input chars:", input.length);
-
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await client.chat.completions.create(payload);
-
       const content = response.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenAI returned an empty response.");
       return content;
     } catch (error) {
       if (error instanceof OpenAI.APIError) {
-        console.error(`[debug] OpenAI APIError (attempt ${attempt}/${maxAttempts}):`, JSON.stringify({
-          status: error.status,
-          message: error.message,
-          requestID: (error as { requestID?: string }).requestID,
-          code: error.code,
-          type: error.type
-        }));
         const retryable = error.status === 401 || error.status === 429 || (error.status ?? 0) >= 500;
         if (retryable && attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
@@ -102,58 +89,40 @@ async function runAgent(agent: Agent, state: WritersRoomState, instruction: stri
   return output;
 }
 
-function mergeProfile(state: WritersRoomState, profile: unknown) {
-  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
-    throw new Error("Occasion Analyst did not return an occasion_profile.");
+function mergeAnalystOutput(state: WritersRoomState, output: AgentOutput) {
+  if (!output.gig_profile || typeof output.gig_profile !== "object" || Array.isArray(output.gig_profile)) {
+    throw new Error("Gig Analyst did not return a gig_profile.");
   }
-  Object.assign(state.occasion_profile, profile);
-  if (state.occasion_profile.sensitive_mode) {
-    state.occasion_profile.humor_ceiling = "gentle";
-    state.occasion_profile.sentiment_ratio = Math.max(0.8, Number(state.occasion_profile.sentiment_ratio) || 0.8);
+  if (!output.material || typeof output.material !== "object" || Array.isArray(output.material)) {
+    throw new Error("Gig Analyst did not return material.");
   }
+  Object.assign(state.gig_profile, output.gig_profile);
+  Object.assign(state.material, output.material);
+
+  const hasChildren = state.gig_profile.audience_group.some((group) => group.toLowerCase() === "children");
+  if (hasChildren) {
+    state.gig_profile.clean_mode = true;
+    state.gig_profile.edginess = "clean";
+  }
+  if (state.gig_profile.sensitive_mode) state.gig_profile.edginess = "clean";
 }
 
-function stringList(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+function refinementKind(output: AgentOutput): RefinementKind {
+  return output.refinement_type === "surface" ? "surface" : "structural";
 }
 
-async function askInterviewer(session: SessionRuntime, emit: Emit) {
-  const forceCompletion = session.interviewerQuestionsAsked >= 6;
-  const output = await runAgent(
-    "interviewer",
-    session.state,
-    forceCompletion
-      ? "Six questions have been asked. Now produce the material JSON from the conversation; do not ask another question."
-      : `Ask the next most useful question. This is question ${session.interviewerQuestionsAsked + 1} of a maximum of 6.`,
-    emit
-  );
-
-  if (output.material && typeof output.material === "object") {
-    session.state.material = output.material as WritersRoomState["material"];
-    await runRoom(session, emit);
-    return;
-  }
-
-  const question = typeof output.question === "string" ? output.question.trim() : "";
-  if (!question) throw new Error("Interviewer returned neither a question nor material.");
-  session.interviewerQuestionsAsked += 1;
-  session.pendingQuestion = question;
-  emit({ type: "chat", speaker: "Interviewer", text: question });
-}
-
-async function runRoom(session: SessionRuntime, emit: Emit) {
+async function runInternalLoop(session: SessionRuntime, emit: Emit, firstDraftInstruction: string) {
   const state = session.state;
-  const structured = await runAgent("structurer", state, "Create the beat sheet now.", emit);
-  if (!structured.skeleton || typeof structured.skeleton !== "object") throw new Error("Structurer did not return a skeleton.");
-  state.skeleton = structured.skeleton as WritersRoomState["skeleton"];
-
   state.loop.iteration = 0;
   state.loop.stop_reason = null;
+
   while (state.loop.iteration < state.loop.max_iterations) {
     const draft = await runAgent(
       "punch-up-writer",
       state,
-      state.loop.iteration === 0 ? "Write the first draft." : "Revise the current draft using the revision targets only.",
+      state.loop.iteration === 0
+        ? firstDraftInstruction
+        : "Revise the current draft using the Test Audience revision targets only.",
       emit
     );
     if (!draft.draft || typeof draft.draft !== "object") throw new Error("Punch-Up Writer did not return a draft.");
@@ -172,72 +141,57 @@ async function runRoom(session: SessionRuntime, emit: Emit) {
     }
   }
   if (!state.loop.stop_reason) state.loop.stop_reason = "max_iterations";
+}
 
-  const directed = await runAgent("director", state, "Assemble the final speech and delivery guidance.", emit);
-  if (!directed.final || typeof directed.final !== "object") throw new Error("Director did not return a final speech.");
-  state.final = directed.final as WritersRoomState["final"];
+async function structureSet(session: SessionRuntime, emit: Emit) {
+  const structured = await runAgent("structurer", session.state, "Create the stand-up set list now.", emit);
+  if (!structured.skeleton || typeof structured.skeleton !== "object") throw new Error("Structurer did not return a skeleton.");
+  session.state.skeleton = structured.skeleton as WritersRoomState["skeleton"];
+}
+
+async function directSet(session: SessionRuntime, emit: Emit) {
+  const directed = await runAgent("director", session.state, "Assemble the final set and delivery guidance.", emit);
+  if (!directed.final || typeof directed.final !== "object") throw new Error("Director did not return a final set.");
+  session.state.final = directed.final as WritersRoomState["final"];
   session.phase = "complete";
-  session.pendingQuestion = null;
   saveSession(session);
-  emit({ type: "final", state });
+  emit({ type: "final", state: session.state });
 }
 
-export async function startSession(occasionFreetext: string, emit: Emit) {
-  const state = newState(occasionFreetext);
-  const output = await runAgent("occasion-analyst", state, "Analyze this occasion and surface only necessary clarifying questions.", emit);
-  mergeProfile(state, output.occasion_profile);
-  const session: SessionRuntime = {
-    state,
-    phase: "interview",
-    analystQuestions: stringList(output.questions_for_user),
-    pendingQuestion: null,
-    interviewerQuestionsAsked: 0,
-    analystHumorCap: state.occasion_profile.humor_ceiling
-  };
+export async function startSession(briefFreetext: string, emit: Emit) {
+  const session: SessionRuntime = { state: newState(briefFreetext), phase: "working" };
   saveSession(session);
-  emit({ type: "session", sessionId: state.session_id });
+  emit({ type: "session", sessionId: session.state.session_id });
 
-  const firstQuestion = session.analystQuestions.shift();
-  if (firstQuestion) {
-    session.phase = "analyst_questions";
-    session.pendingQuestion = firstQuestion;
-    emit({ type: "chat", speaker: "Analyst", text: firstQuestion });
-  } else {
-    await askInterviewer(session, emit);
-  }
-  saveSession(session);
-}
-
-export async function answerSession(sessionId: string, answer: string, emit: Emit) {
-  const session = getSession(sessionId);
-  if (!session) throw new Error("That session has expired. Start a new room.");
-  if (!session.pendingQuestion) throw new Error("The room is not waiting for an answer.");
-  session.state.user_input.answers.push({ question: session.pendingQuestion, answer });
-
-  if (session.phase === "analyst_questions") {
-    const nextQuestion = session.analystQuestions.shift();
-    if (nextQuestion) {
-      session.pendingQuestion = nextQuestion;
-      emit({ type: "chat", speaker: "Analyst", text: nextQuestion });
-      saveSession(session);
-      return;
-    }
-    session.phase = "interview";
-  }
-
-  await askInterviewer(session, emit);
-  saveSession(session);
-}
-
-export async function rerunSession(sessionId: string, requestedHumor: HumorCeiling, emit: Emit) {
-  const session = getSession(sessionId);
-  if (!session) throw new Error("That session has expired. Start a new room.");
-  if (session.phase !== "complete") throw new Error("Finish the interview before rerunning the room.");
-  session.state.occasion_profile.humor_ceiling = capHumor(
-    requestedHumor,
-    session.analystHumorCap,
-    session.state.occasion_profile.sensitive_mode,
-    session.state.occasion_profile.formality
+  const analysis = await runAgent(
+    "gig-analyst",
+    session.state,
+    "Analyze the user's brief, extracting the gig profile and usable material. This is the initial run.",
+    emit
   );
-  await runRoom(session, emit);
+  mergeAnalystOutput(session.state, analysis);
+  await structureSet(session, emit);
+  await runInternalLoop(session, emit, "Write the first draft of the stand-up set.");
+  await directSet(session, emit);
+}
+
+export async function refineSession(sessionId: string, feedback: string, emit: Emit) {
+  const session = getSession(sessionId);
+  if (!session) throw new Error("That session has expired. Start a new room.");
+  if (session.phase !== "complete") throw new Error("Wait for the current room run to finish before refining it.");
+
+  session.phase = "working";
+  session.state.user_input.refinement_history.push(feedback);
+  saveSession(session);
+
+  const analysis = await runAgent(
+    "gig-analyst",
+    session.state,
+    `Classify and apply the latest user feedback: ${feedback}`,
+    emit
+  );
+  mergeAnalystOutput(session.state, analysis);
+  if (refinementKind(analysis) === "structural") await structureSet(session, emit);
+  await runInternalLoop(session, emit, "Revise the current draft to address the latest user feedback.");
+  await directSet(session, emit);
 }
