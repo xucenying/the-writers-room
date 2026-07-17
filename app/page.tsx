@@ -8,8 +8,11 @@ type RecordValue = Record<string, unknown>;
 
 const examples = [
   "Office party: I am a product manager at a small startup, our CEO loves buzzwords, and I need three clean minutes for 40 coworkers.",
-  "Family birthday: my dad is turning 60, the whole family including children will be there, and he thinks every remote control needs a user manual.",
-  "Open mic first-timer: I am a teacher, nervous, and want a short playful set about parent emails and trying to look organized."
+  "Family birthday: my dad is turning 60, kids will be there, and he thinks every remote control needs a user manual. Keep it clean.",
+  "Open mic first-timer: I am a teacher, nervous, and want a short playful set about parent emails and trying to look organized.",
+  "Retirement: I am saying goodbye to our head nurse after 28 years. The whole hospital knows her as the person who can find anything.",
+  "My 30th birthday: friends from school, work, and family will be there. I want playful jokes about becoming the person who owns a label maker.",
+  "School fundraiser: I am a parent hosting for families and teachers. Keep it kid-safe and light about homework, lunchboxes, and group chats."
 ];
 
 const inputHints = [
@@ -207,16 +210,68 @@ export default function Home() {
     if (finalState) await navigator.clipboard.writeText(finalState.final.set_text);
   }
 
+  async function shareSet() {
+    if (!finalState) return;
+    const { title, set_text: setText } = finalState.final;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text: setText });
+        return;
+      }
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
+    }
+
+    await navigator.clipboard.writeText(setText);
+  }
+
+  function downloadSet() {
+    if (!finalState) return;
+    const { title, set_text: setText } = finalState.final;
+    const fileName = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "writers-room-set"}.txt`;
+    const downloadUrl = URL.createObjectURL(new Blob([setText], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(downloadUrl);
+  }
+
   function appendHint(template: string) {
     setBrief((current) => `${current}${current.trim() ? "\n" : ""}${template}`);
   }
 
-  if (!finalState && !busy && !error) return <main className="landing"><span className="eyebrow">FIVE AGENTS. ONE KILLER SET.</span><h1>The Writers&apos; Room</h1><p>Bring the details. We&apos;ll shape them into a safe, performable stand-up set and test every beat before it reaches the mic.</p><form onSubmit={start} className="occasion-form"><label htmlFor="brief">Tell the room everything</label><textarea id="brief" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="The occasion, who&apos;s in the audience, what you do, stories to include, and the tone you want. The more you give, the better the set." rows={8} /><div className="input-hints"><p>Things you could tell the room <em>(all optional)</em></p><div>{inputHints.map((hint) => <button key={hint.label} type="button" onClick={() => appendHint(hint.template)}>{hint.label}</button>)}</div><small>The room fills any gaps with safe assumptions.</small></div><button type="submit">Enter the room <span>→</span></button></form><div className="examples">{examples.map((example) => <button key={example} type="button" onClick={() => setBrief(example)}>{example}</button>)}</div></main>;
+  function returnToLanding() {
+    setFeed([]);
+    setFeedback("");
+    setError(null);
+    setFinalState(null);
+  }
+
+  if (!finalState && !busy && !error) return <main className="landing">
+    <section className="landing-primary">
+      <span className="eyebrow">FIVE AGENTS. ONE KILLER SET.</span>
+      <h1>The Writers&apos; Room</h1>
+      <p>Bring the details. We&apos;ll shape them into a safe, performable stand-up set and test every beat before it reaches the mic.</p>
+      <form onSubmit={start} className="occasion-form">
+        <label htmlFor="brief">Tell the room everything</label>
+        <textarea id="brief" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="The occasion, who&apos;s in the audience, what you do, stories to include, and the tone you want. The more you give, the better the set." rows={8} />
+        <div className="input-hints"><p>Things you could tell the room <em>(all optional)</em></p><div>{inputHints.map((hint) => <button key={hint.label} type="button" onClick={() => appendHint(hint.template)}>{hint.label}</button>)}</div><small>The room fills any gaps with safe assumptions.</small></div>
+        <button type="submit">Enter the room <span>→</span></button>
+      </form>
+    </section>
+    <aside className="examples">
+      <span className="eyebrow">START WITH A BRIEF</span>
+      <h2>Try an example</h2>
+      <p>Choose one to load it into the room, then make it your own.</p>
+      <div className="example-list">{examples.map((example) => <button key={example} type="button" onClick={() => setBrief(example)}>{example}</button>)}</div>
+    </aside>
+  </main>;
 
   return <main className="room-shell">
-    <header className="room-header"><div><span className="eyebrow">THE WRITERS&apos; ROOM</span><strong>{finalState ? finalState.final.title : "Building your set"}</strong></div><span className={`status ${busy ? "live" : ""}`}>{busy ? "ROOM IN SESSION" : "ROOM PAUSED"}</span></header>
-    {error && <p className="error">{error}</p>}
+    <header className="room-header"><div><span className="eyebrow">THE WRITERS&apos; ROOM</span><strong>{finalState ? finalState.final.title : "Building your set"}</strong></div><div className="room-actions"><button type="button" className="back-button" onClick={returnToLanding} disabled={busy}>← Back to brief</button><span className={`status ${busy ? "live" : ""}`}>{busy ? "ROOM IN SESSION" : "ROOM PAUSED"}</span></div></header>
+    {error && <section className="room-error" role="alert"><div><strong>The room hit a snag.</strong><p>{error}</p></div><button type="button" onClick={finalState ? () => setError(null) : returnToLanding}>{finalState ? "Keep current set" : "Return to brief"}</button></section>}
     <section className="room-grid solo-feed"><div className="brief-pane"><div className="pane-title"><span>01</span> Your brief</div><p>{brief}</p>{busy && <div className="typing">The room is thinking<span>.</span><span>.</span><span>.</span></div>}</div><div className="feed-pane"><div className="pane-title"><span>02</span> Live writers&apos; room</div><div className="feed-log">{feed.map((item, index) => <AgentCard item={item} key={`${item.agent}-${index}`} />)}</div></div></section>
-    {finalState && <section className="final-card"><div className="final-heading"><div><span className="eyebrow">FINAL SET · {finalState.loop.stop_reason?.replace("_", " ")}</span><h2>{finalState.final.title}</h2></div><button onClick={copySet}>Copy plain text</button></div><p className="duration">{formatDuration(finalState.final.estimated_duration_seconds)} · {finalState.loop.iteration} room pass{finalState.loop.iteration === 1 ? "" : "es"}</p>{finalState.gig_profile.assumptions.length > 0 && <div className="assumptions"><strong>The room assumed:</strong>{finalState.gig_profile.assumptions.map((assumption) => <span key={assumption}>{assumption}</span>)}</div>}<SetText text={finalState.final.set_text} /><div className="delivery"><h3>Delivery notes</h3><ul>{finalState.final.delivery_tips.map((tip) => <li key={tip}>{tip}</li>)}</ul></div><form className="feedback-form" onSubmit={refine}><label htmlFor="feedback">Tell the room what to change</label><div><input id="feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="More jokes about my job, shorter, keep it clean…" disabled={busy} /><button disabled={busy || !feedback.trim()}>Refine set</button></div></form></section>}
+    {finalState && <section className="final-card"><div className="final-heading"><div><span className="eyebrow">FINAL SET · {finalState.loop.stop_reason?.replace("_", " ")}</span><h2>{finalState.final.title}</h2></div><div className="final-actions"><button type="button" onClick={copySet}>Copy plain text</button><button type="button" onClick={shareSet}>Share</button><button type="button" onClick={downloadSet}>Download .txt</button></div></div><p className="duration">{formatDuration(finalState.final.estimated_duration_seconds)} · {finalState.loop.iteration} room pass{finalState.loop.iteration === 1 ? "" : "es"}</p>{finalState.gig_profile.assumptions.length > 0 && <div className="assumptions"><strong>The room assumed:</strong>{finalState.gig_profile.assumptions.map((assumption) => <span key={assumption}>{assumption}</span>)}</div>}<SetText text={finalState.final.set_text} /><div className="delivery"><h3>Delivery notes</h3><ul>{finalState.final.delivery_tips.map((tip) => <li key={tip}>{tip}</li>)}</ul></div><form className="feedback-form" onSubmit={refine}><label htmlFor="feedback">Tell the room what to change</label><div><input id="feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="More jokes about my job, shorter, keep it clean…" disabled={busy} /><button disabled={busy || !feedback.trim()}>Refine set</button></div></form></section>}
   </main>;
 }
