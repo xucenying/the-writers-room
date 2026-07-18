@@ -44,6 +44,7 @@ async function requestModel(system: string, input: string) {
 
   const payload = {
     model: process.env.OPENAI_MODEL || "gpt-5.6",
+    response_format: { type: "json_object" as const },
     messages: [
       { role: "system" as const, content: system },
       { role: "user" as const, content: input }
