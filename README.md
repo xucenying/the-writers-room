@@ -10,7 +10,7 @@ https://the-writers-room.vercel.app/
 
 # Demo video
 
-https://www.youtube.com/watch?v=aGFSQokGFl8
+https://www.youtube.com/watch?v=4X2NHqVYJCA
 
 # Screenshot
 
